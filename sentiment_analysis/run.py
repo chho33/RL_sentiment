@@ -6,13 +6,19 @@ import sys
 import numpy as np
 sys.path.append('../sentiment_analysis/')
 import dataset
-from . import model
+#from . import model
+import model
 
+SEED = 112
 VOCAB_SIZE = 10000
 BATCH_SIZE = 32
 UNIT_SIZE = 256
 MAX_LENGTH = 40
 CHECK_STEP = 1000.
+
+def sentence_cutter(sentence):
+    sentence = [s for s in sentence]
+    return (' ').join(sentence)
 
 def create_model(session, mode):
   m = model.discriminator(VOCAB_SIZE,
@@ -20,7 +26,8 @@ def create_model(session, mode):
                           BATCH_SIZE,
                           MAX_LENGTH,
                           mode)
-  ckpt = tf.train.get_checkpoint_state('sentiment_analysis/saved_model/')
+  ckpt = tf.train.get_checkpoint_state('./saved_model/')
+  print('ckpt: ',ckpt)
 
   if ckpt:
     print("Reading model from %s" % ckpt.model_checkpoint_path)
@@ -40,6 +47,7 @@ def train():
      dataset.file_to_token('corpus/SAD.csv', vocab_map)
 
    d = dataset.read_data('corpus/SAD.csv.token')
+   random.seed(SEED)
    random.shuffle(d)    
    
    train_set = d[:int(0.9 * len(d))]
@@ -87,15 +95,20 @@ def evaluate():
   sys.stdout.write('>')
   sys.stdout.flush()
   sentence = sys.stdin.readline()
+  sentence = sentence_cutter(sentence)
 
   while(sentence):
     token_ids = dataset.convert_to_token(sentence, vocab_map)
+    print('toekn_ids: ',token_ids)
     encoder_input, encoder_length, _ = Model.get_batch([(0, token_ids)]) 
+    print('encoder_input: ',encoder_input, encoder_input.shape)
+    print('encoder_length: ',encoder_length)
     score = Model.step(sess, encoder_input, encoder_length)
     print('Score: ' + str(score[0][0]))
     print('>', end = '')
     sys.stdout.flush()
     sentence = sys.stdin.readline()
+    sentence = sentence_cutter(sentence)
 if __name__ == '__main__':
   train()
   #evaluate()

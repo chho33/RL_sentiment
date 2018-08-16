@@ -8,9 +8,12 @@ import copy
 from six.moves import xrange  # pylint: disable=redefined-builtin
 from six.moves import zip  # pylint: disable=redefined-builtin
 
-from tensorflow.contrib.rnn.python.ops import core_rnn
+#from tensorflow.contrib.rnn.python.ops import core_rnn
+import tensorflow as tf
+from tensorflow import nn
 from tensorflow.contrib.rnn.python.ops import core_rnn_cell
-from tensorflow.contrib.rnn.python.ops import core_rnn_cell_impl
+from tensorflow.contrib.rnn import LSTMStateTuple
+#from tensorflow.contrib.rnn.python.ops import core_rnn_cell_impl
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -19,11 +22,20 @@ from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops.distributions import bernoulli
 from tensorflow.python.util import nest
 
-# TODO(ebrevdo): Remove once _linear is fully deprecated.
-linear = core_rnn_cell_impl._linear  # pylint: disable=protected-access
+from flags import FLAGS
 
+
+# TODO(ebrevdo): Remove once _linear is fully deprecated.
+#linear = core_rnn_cell_impl._linear  # pylint: disable=protected-access
+linear = core_rnn_cell._linear  # pylint: disable=protected-access
+
+def bernoulli_sampling(sampling_probability):
+  select_sampler = bernoulli.Bernoulli(probs=sampling_probability,dtype=tf.bool)
+  select_sampler = select_sampler.sample()
+  return select_sampler
 
 def _extract_argmax_and_embed(embedding,
                               output_projection=None,
@@ -231,7 +243,8 @@ def embedding_rnn_seq2seq(encoder_inputs,
         encoder_cell,
         embedding_classes=num_encoder_symbols,
         embedding_size=embedding_size)
-    _, encoder_state = core_rnn.static_rnn(
+    #_, encoder_state = core_rnn.static_rnn(
+    _, encoder_state = nn.static_rnn(
         encoder_cell, encoder_inputs, dtype=dtype)
 
     # Decoder.
@@ -287,7 +300,9 @@ def attention_decoder(decoder_inputs,
                       loop_function=None,
                       dtype=None,
                       scope=None,
-                      initial_state_attention=False):
+                      initial_state_attention=False,
+                      schedule_sampling=False,
+                      sampling_probability=None):
   """RNN decoder with attention for the sequence-to-sequence model.
 
   In this context "attention" means that, during decoding, the RNN can look up
@@ -329,9 +344,9 @@ def attention_decoder(decoder_inputs,
         attention masks:
           cell_output, new_state = cell(linear(input, prev_attn), prev_state).
         Then, we calculate new attention masks:
-          new_attn = softmax(V^T * tanh(W * attention_states + U * new_state))
-        and then we calculate the output:
-          output = linear(cell_output, new_attn).
+        #  new_attn = softmax(V^T * tanh(W * attention_states + U * new_state))
+        #and then we calculate the output:
+        #  output = linear(cell_output, new_attn).
       state: The state of each decoder cell the final time-step.
         It is a 2D Tensor of shape [batch_size x cell.state_size].
 
@@ -359,6 +374,9 @@ def attention_decoder(decoder_inputs,
     if attn_length is None:
       attn_length = array_ops.shape(attention_states)[1]
     attn_size = attention_states.get_shape()[2].value
+    #print('attention_states: ', attention_states)
+    #print('attention_length: ', attn_length)
+    #print('attention_size: ', attn_size)
 
     # To calculate W1 * h_t we use a 1-by-1 convolution, need to reshape before.
     hidden = array_ops.reshape(attention_states,
@@ -369,6 +387,7 @@ def attention_decoder(decoder_inputs,
     for a in xrange(num_heads):
       k = variable_scope.get_variable("AttnW_%d" % a,
                                       [1, 1, attn_size, attention_vec_size])
+      # input: [batch, in_height, in_width, in_channels]; filter: [filter_height, filter_width, in_channels, out_channels]
       hidden_features.append(nn_ops.conv2d(hidden, k, [1, 1, 1, 1], "SAME"))
       v.append(
           variable_scope.get_variable("AttnV_%d" % a, [attention_vec_size]))
@@ -385,23 +404,36 @@ def attention_decoder(decoder_inputs,
           if ndims:
             assert ndims == 2
         query = array_ops.concat(query_list, 1)
+      ###
       for a in xrange(num_heads):
         with variable_scope.variable_scope("Attention_%d" % a):
           y = linear(query, attention_vec_size, True)
+          #print('query: ',query)
+          #print('attention_vec_size: ',attention_vec_size)
+          #print('y: ',y)
           y = array_ops.reshape(y, [-1, 1, 1, attention_vec_size])
+          #print('y: ',y)
           # Attention mask is a softmax of v^T * tanh(...).
           s = math_ops.reduce_sum(v[a] * math_ops.tanh(hidden_features[a] + y),
                                   [2, 3])
+  
+          #print('s: ',s)
           a = nn_ops.softmax(s)
-          # Now calculate the attention-weighted vector d.
+          #print('a: ',a)
+          # Now calculate the attention-weighted vector d. (i think it's the context vector)
+          #print('hidden: ',hidden)
           d = math_ops.reduce_sum(
               array_ops.reshape(a, [-1, attn_length, 1, 1]) * hidden, [1, 2])
+          #print('d: ',d)
           ds.append(array_ops.reshape(d, [-1, attn_size]))
+          #print('d: ',array_ops.reshape(d, [-1, attn_size]))
+          #print('---------------')
       return ds
 
     outputs = []
     prev = None
     batch_attn_size = array_ops.stack([batch_size, attn_size])
+    #print('batch_attn_size: ',batch_attn_size)
     attns = [
         array_ops.zeros(
             batch_attn_size, dtype=dtype) for _ in xrange(num_heads)
@@ -410,18 +442,30 @@ def attention_decoder(decoder_inputs,
       a.set_shape([None, attn_size])
     if initial_state_attention:
       attns = attention(initial_state)
+    decoder_size = decoder_inputs[0].shape[1]
     for i, inp in enumerate(decoder_inputs):
       if i > 0:
         variable_scope.get_variable_scope().reuse_variables()
+      if schedule_sampling:
+        if (loop_function is not None and prev is not None):
+            inp_prev = loop_function(prev, i)
+        else:
+            inp_prev = inp
+        inp = tf.concat([inp,inp_prev],1)
+        inp = tf.cond(bernoulli_sampling(sampling_probability),lambda: inp[:,:decoder_size] , lambda: inp[:,decoder_size:])
       # If loop_function is set, we use it instead of decoder_inputs.
-      if loop_function is not None and prev is not None:
-        with variable_scope.variable_scope("loop_function", reuse=True):
-          inp = loop_function(prev, i)
+      else:
+        if (loop_function is not None and prev is not None):
+          with variable_scope.variable_scope("loop_function", reuse=True):
+            inp = loop_function(prev, i)
       # Merge input and previous attentions into one vector of the right size.
       input_size = inp.get_shape().with_rank(2)[1]
       if input_size.value is None:
         raise ValueError("Could not infer input size from input: %s" % inp.name)
       x = linear([inp] + attns, input_size, True)
+      #print('input_size: ',input_size)
+      #print('[inp] + attns: ',[inp] + attns)
+      #print('x: ',x)
       # Run the RNN.
       cell_output, state = cell(x, state)
       # Run the attention mechanism.
@@ -603,7 +647,8 @@ def embedding_attention_seq2seq(encoder_inputs,
         encoder_cell,
         embedding_classes=num_encoder_symbols,
         embedding_size=embedding_size)
-    encoder_outputs, encoder_state = core_rnn.static_rnn(
+    #encoder_outputs, encoder_state = core_nn.static_rnn(
+    encoder_outputs, encoder_state = nn.static_rnn(
         encoder_cell, encoder_inputs, dtype=dtype)
 
     # First calculate a concatenation of encoder outputs to put attention on.
@@ -784,9 +829,17 @@ def model_with_buckets(encoder_inputs,
     for j, bucket in enumerate(buckets):
       with variable_scope.variable_scope(
           variable_scope.get_variable_scope(), reuse=True if j > 0 else None):
-        bucket_outputs, _ = seq2seq(encoder_inputs[:bucket[0]],
-                                    decoder_inputs[:bucket[1]])
-        outputs.append(bucket_outputs)
+        #print('encoder_inputs: ',encoder_inputs)
+        #print('bucket[0]: ',bucket[0])
+        #print('encoder_inputs[:bucket[0]]: ',encoder_inputs[:bucket[0]])
+        #print('decoder_inputs: ',decoder_inputs)
+        #print('bucket[1]: ',bucket[1])
+        #print('decoder_inputs[:bucket[1]]: ',decoder_inputs[:bucket[1]])
+        ##print('beam decoder: 6 outputs, normal: 2 outputs')
+        bucket_outputs = seq2seq(encoder_inputs[:bucket[0]],
+                                 decoder_inputs[:bucket[1]])
+        #print('bucket_outputs-0: ',bucket_outputs[0],len(bucket_outputs[0]))
+        outputs.append(bucket_outputs[0])
         if per_example_loss:
           losses.append(
               sequence_loss_by_example(
@@ -803,3 +856,338 @@ def model_with_buckets(encoder_inputs,
                   softmax_loss_function=softmax_loss_function))
 
   return outputs, losses
+
+
+
+
+# beam search
+def _extract_beam_search(embedding, beam_size, num_symbols, embedding_size, output_projection=None):
+
+    def loop_function(prev, i, log_beam_probs, beam_path, beam_symbols):
+        if output_projection is not None:
+            #print('prev: ',prev)
+            prev = nn_ops.xw_plus_b(prev, output_projection[0], output_projection[1])
+            #print('output_projection: ',output_projection)
+            #print('prev: ',prev)
+        # 取log方便相加
+        probs = tf.log(tf.nn.softmax(prev))
+        #print('probs: ', i, probs)
+        if i == 1:
+            probs = tf.reshape(probs[0, :], [-1, num_symbols])
+            #print('probs: ', i, probs)
+        if i > 1:
+            # 將序列之機率與前一序列機率相加得到的結果之前有beam_size個序列，此操作產生num_symbols個結果。
+            # 所以reshape成這樣的tensor
+            #print('log_beam_probs[-1]: ',log_beam_probs[-1])
+            #print('probs + log_beam_probs[-1]: ',probs+log_beam_probs[-1])
+            probs = tf.reshape(probs + log_beam_probs[-1], [-1, beam_size * num_symbols])
+            #print('probs: ', i, probs)
+        # 選出機率最大的前beam_size個序列,从beam_size * num_symbols個元素中選出beam_size個
+        best_probs, indices = tf.nn.top_k(probs, beam_size)
+        #print('best_probs : ',best_probs)
+        #print('indices: ',indices)
+        indices = tf.stop_gradient(tf.squeeze(tf.reshape(indices, [-1, 1])))
+        best_probs = tf.stop_gradient(tf.reshape(best_probs, [-1, 1]))
+        #print('indices: ',indices)
+
+        # beam_size * num_symbols，看對應的是哪個序列和斷辭
+        symbols = indices % num_symbols  # Which word in vocabulary.
+        beam_parent = indices // num_symbols  # Which hypothesis it came from.
+        beam_symbols.append(symbols)
+        beam_path.append(beam_parent)
+        log_beam_probs.append(best_probs)
+
+        # 對beam-search選出的beam size個斷詞進行embedding，得到對應的詞向量
+        emb_prev = embedding_ops.embedding_lookup(embedding, symbols)
+        emb_prev = tf.reshape(emb_prev, [-1, embedding_size])
+        return emb_prev
+
+    return loop_function
+
+def beam_attention_decoder(decoder_inputs,
+                          initial_state,
+                          attention_states,
+                          cell,
+                          embedding,
+                          output_size=None,
+                          num_heads=1,
+                          loop_function=None,
+                          dtype=None,
+                          scope=None,
+                          initial_state_attention=False, output_projection=None, beam_size=10):
+    if not decoder_inputs:
+        raise ValueError("Must provide at least 1 input to attention decoder.")
+    if num_heads < 1:
+        raise ValueError("With less than 1 heads, use a non-attention decoder.")
+    if not attention_states.get_shape()[1:2].is_fully_defined():
+        raise ValueError("Shape[1] and [2] of attention_states must be known: %s"
+                         % attention_states.get_shape())
+    if output_size is None:
+        output_size = cell.output_size
+
+    with variable_scope.variable_scope(scope or "attention_decoder", dtype=dtype) as scope:
+        dtype = scope.dtype
+        batch_size = array_ops.shape(decoder_inputs[0])[0]  # Needed for reshaping.
+        attn_length = attention_states.get_shape()[1].value
+        if attn_length is None:
+            attn_length = array_ops.shape(attention_states)[1]
+        attn_size = attention_states.get_shape()[2].value
+
+        # To calculate W1 * h_t we use a 1-by-1 convolution, need to reshape before.
+        hidden = array_ops.reshape(attention_states, [-1, attn_length, 1, attn_size])
+        hidden_features = []
+        v = []
+        attention_vec_size = attn_size  # Size of query vectors for attention.
+        for a in xrange(num_heads):
+            k = variable_scope.get_variable("AttnW_%d" % a, [1, 1, attn_size, attention_vec_size])
+            hidden_features.append(nn_ops.conv2d(hidden, k, [1, 1, 1, 1], "SAME"))
+            v.append(variable_scope.get_variable("AttnV_%d" % a, [attention_vec_size]))
+
+        state = []
+        # expand encoder last hidden layer to beam_size dimensions,因為decoder階段的batch_size = beam_size。 
+        # initial_state is a list，RNN有多少層就有多少個element，each element is a LSTMStateTuple，include h,c state
+        # 所以要將其擴展成beam_size維，其實是把c和h擴展，最後再合成LSTMStateTuple就可以了
+        ##print('initial_state: ',initial_state,len(initial_state))
+        for layers in initial_state:
+            ##print('layers: ',layers,dir(layers))
+            #c = [layers.c] * beam_size
+            h = [layers] * beam_size
+            #c = array_ops.concat(c, 0)
+            h = array_ops.concat(h, 0)
+            #state.append(LSTMStateTuple(c, h))
+            state.append(h)
+        state = tuple(state)
+        ##print('state: ',state)
+        # state_size = int(initial_state.get_shape().with_rank(2)[1])
+        # states = []
+        # for kk in range(beam_size):
+        #     states.append(initial_state)
+        # state = array_ops.concat(states, 0)
+        # state = initial_state
+
+        def attention(query):
+            ds = []  # Results of attention reads will be stored here.
+            if nest.is_sequence(query):  # If the query is a tuple, flatten it.
+                query_list = nest.flatten(query)
+                for q in query_list:  # Check that ndims == 2 if specified.
+                    ndims = q.get_shape().ndims
+                    if ndims:
+                        assert ndims == 2
+                query = array_ops.concat(query_list, 1)
+            for a in xrange(num_heads):
+                with variable_scope.variable_scope("Attention_%d" % a):
+                    y = linear(query, attention_vec_size, True)
+                    y = array_ops.reshape(y, [-1, 1, 1, attention_vec_size])
+                    # Attention mask is a softmax of v^T * tanh(...).
+                    s = math_ops.reduce_sum(v[a] * math_ops.tanh(hidden_features[a] + y), [2, 3])
+                    a = nn_ops.softmax(s)
+                    # Now calculate the attention-weighted vector d.
+                    d = math_ops.reduce_sum(array_ops.reshape(a, [-1, attn_length, 1, 1]) * hidden, [1, 2])
+                    ds.append(array_ops.reshape(d, [-1, attn_size]))
+            return ds
+
+        outputs = []
+        prev = None
+        # attention也要定義成beam_size为的tensor
+        batch_attn_size = array_ops.stack([beam_size, attn_size]) #(10,256)
+        #print('batch_attn_size: ',batch_attn_size)
+        attns = [array_ops.zeros(batch_attn_size, dtype=dtype) for _ in xrange(num_heads)]
+        #print('attns: ', attns)
+        for a in attns:  # Ensure the second shape of attention vectors is set.
+            a.set_shape([None, attn_size])
+            ##print('a: ',a)
+        if initial_state_attention:
+            attns = attention(initial_state)
+
+        log_beam_probs, beam_path, beam_symbols = [], [], []
+        for i, inp in enumerate(decoder_inputs):
+            #if i >1 : kkk
+            if i > 0:
+                variable_scope.get_variable_scope().reuse_variables()
+            # If loop_function is set, we use it instead of decoder_inputs.
+            if i == 0:
+                #when i=0，input一個batch_szie=beam_size的tensor，且each element都是<GO>
+                inp = tf.nn.embedding_lookup(embedding, tf.constant(1, dtype=tf.int32, shape=[beam_size]))
+
+            if loop_function is not None and prev is not None:
+                with variable_scope.variable_scope("loop_function", reuse=True):
+                    inp = loop_function(prev, i, log_beam_probs, beam_path, beam_symbols)
+            # Merge input and previous attentions into one vector of the right size.
+            input_size = inp.get_shape().with_rank(2)[1]
+            if input_size.value is None:
+                raise ValueError("Could not infer input size from input: %s" % inp.name)
+            inputs = [inp] + attns
+            x = linear(inputs, input_size, True)
+            #print('input_size: ',i, input_size)
+            #print('[inp] + attns: ',i, [inp] + attns)
+            #print('x: ',i, x)
+            # Run the RNN.
+            cell_output, state = cell(x, state)
+            # Run the attention mechanism.
+            if i == 0 and initial_state_attention:
+                with variable_scope.variable_scope(variable_scope.get_variable_scope(), reuse=True):
+                    attns = attention(state)
+            else:
+                attns = attention(state)
+
+            with variable_scope.variable_scope("AttnOutputProjection"):
+                inputs = [cell_output] + attns
+                output = linear(inputs, output_size, True)
+                #print('[cell_output] + attns: ',i,[cell_output] + attns)
+                #print('output: ',i,output)
+            if loop_function is not None:
+                prev = output
+            #outputs.append(tf.argmax(nn_ops.xw_plus_b(output, output_projection[0], output_projection[1]), axis=1))
+            outputs.append(output)
+            ##print('outpus[-1]: ', outputs[-1])
+
+    #return outputs, state, tf.reshape(array_ops.concat(beam_path, 0), [-1, beam_size]), tf.reshape(tf.concat(beam_symbols, 0),[-1, beam_size])
+    #log_beam_probs = tf.reshape(tf.concat(log_beam_probs,0),[-1,beam_size])
+    #log_beam_probs_sum = math_ops.reduce_sum(log_beam_probs,axis=0) 
+    log_beam_probs = tf.concat(log_beam_probs,1)
+    log_beam_probs_sum = math_ops.reduce_sum(log_beam_probs,axis=1)
+    print('log_beam_probs: ',log_beam_probs)
+    print('log_beam_probs_sum: ',log_beam_probs_sum)
+    log_beam_probs_max_id = math_ops.argmax(log_beam_probs_sum) 
+    _,log_beam_probs_ids_rev = tf.nn.top_k(log_beam_probs_sum,beam_size)
+    print('log_beam_probs_ids_rev: ',log_beam_probs_ids_rev)
+    print('--------')
+    log_beam_probs_ids_rev = tf.reshape(log_beam_probs_ids_rev,[-1,1])
+    #outputs = tf.gather_nd(outputs,log_beam_probs_ids_rev)
+    #print('log_beam_probs_ids_rev: ',log_beam_probs_ids_rev)
+    #print('outputs: ',outputs,len(outputs))
+    #for out in outputs:
+    #    print('out: ',tf.gather_nd(out,log_beam_probs_ids_rev))
+    outputs = [tf.gather_nd(out,log_beam_probs_ids_rev) for out in outputs]
+    if not bool(FLAGS.debug):
+        outputs = [tf.reshape(logit[[log_beam_probs_max_id]],[1,-1]) for logit in outputs]
+    #return outputs, state, tf.reshape(array_ops.concat(beam_path, 0), [-1, beam_size]), tf.reshape(tf.concat(beam_symbols, 0),[-1, beam_size]), tf.reshape(tf.concat(log_beam_probs,0),[-1,beam_size])
+    return outputs, state
+
+def embedding_attention_decoder(decoder_inputs,
+                                initial_state,
+                                attention_states,
+                                cell,
+                                num_symbols,
+                                embedding_size,
+                                embedding,
+                                num_heads=1,
+                                output_size=None,
+                                output_projection=None,
+                                feed_previous=False,
+                                update_embedding_for_previous=True,
+                                dtype=None,
+                                scope=None,
+                                initial_state_attention=False, 
+                                beam_search=True, 
+                                beam_size=10, 
+                                loop=None,
+                                schedule_sampling=False,
+                                sampling_probability=None):
+
+    if output_size is None:
+        output_size = cell.output_size
+    if output_projection is not None:
+        proj_biases = ops.convert_to_tensor(output_projection[1], dtype=dtype)
+        proj_biases.get_shape().assert_is_compatible_with([num_symbols])
+
+    with variable_scope.variable_scope(scope or "embedding_attention_decoder", dtype=dtype) as scope:
+
+        # beam_search only happen in test mode
+        if beam_search:
+            #embedding = variable_scope.get_variable("embedding", [num_symbols, embedding_size])
+            emb_inp = [embedding_ops.embedding_lookup(embedding, i) for i in decoder_inputs]
+            loop_function = _extract_beam_search(embedding, beam_size, num_symbols, embedding_size, output_projection)
+            return beam_attention_decoder(
+                emb_inp, initial_state, attention_states, cell, embedding, output_size=output_size,
+                num_heads=num_heads, loop_function=loop_function,
+                initial_state_attention=initial_state_attention, output_projection=output_projection,
+                beam_size=beam_size)
+        else:
+            loop_function = None
+            if feed_previous or schedule_sampling:
+              if loop:
+                loop_function = loop
+              else:
+                loop_function = _extract_argmax_and_embed(
+                                embedding, output_projection,
+                                update_embedding_for_previous)
+            else:
+              if schedule_sampling: 
+                try:
+                  tf.assert_type(sampling_probability,tf.float32) 
+                except:
+                  tf.assert_type(sampling_probability,tf.float64) 
+            emb_inp = [
+                embedding_ops.embedding_lookup(embedding, i) for i in decoder_inputs
+            ]
+            return attention_decoder(
+                emb_inp,
+                initial_state,
+                attention_states,
+                cell,
+                output_size=output_size,
+                num_heads=num_heads,
+                loop_function=loop_function,
+                initial_state_attention=initial_state_attention,
+                schedule_sampling=schedule_sampling,
+                sampling_probability=sampling_probability)
+
+
+def embedding_attention_seq2seq(encoder_inputs,
+                                decoder_inputs,
+                                cell,
+                                num_encoder_symbols,
+                                num_decoder_symbols,
+                                embedding_size,
+                                embedding,
+                                num_heads=1,
+                                output_projection=None,
+                                feed_previous=False,
+                                dtype=None,
+                                scope=None,
+                                initial_state_attention=False, 
+                                beam_search=True,
+                                beam_size=10,
+                                loop=None,
+                                schedule_sampling=False,
+                                sampling_probability=None):
+    with variable_scope.variable_scope(scope or "embedding_attention_seq2seq", dtype=dtype) as scope:
+        dtype = scope.dtype
+        # Encoder.
+        encoder_cell = copy.deepcopy(cell)
+        encoder_cell = core_rnn_cell.EmbeddingWrapper(
+            encoder_cell, 
+            embedding_classes=num_encoder_symbols, 
+            embedding_size=embedding_size)
+        encoder_outputs, encoder_state = nn.static_rnn(encoder_cell, encoder_inputs, dtype=dtype)
+        ##print('encoder_state: ',encoder_state)
+
+        # First calculate a concatenation of encoder outputs to put attention on.
+        top_states = [array_ops.reshape(e, [-1, 1, cell.output_size]) for e in encoder_outputs]
+        attention_states = array_ops.concat(top_states, 1)
+
+        # Decoder.
+        output_size = None
+        if output_projection is None:
+            cell = core_rnn_cell.OutputProjectionWrapper(cell, num_decoder_symbols)
+            output_size = num_decoder_symbols
+
+        return embedding_attention_decoder(
+            decoder_inputs,
+            encoder_state,
+            attention_states,
+            cell,
+            num_decoder_symbols,
+            embedding_size,
+            num_heads=num_heads,
+            output_size=output_size,
+            output_projection=output_projection,
+            feed_previous=feed_previous,
+            initial_state_attention=initial_state_attention, 
+            embedding = embedding,
+            beam_search=beam_search, 
+            beam_size=beam_size,
+            loop=loop,
+            schedule_sampling=schedule_sampling,
+            sampling_probability=sampling_probability)

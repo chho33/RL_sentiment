@@ -1,0 +1,3 @@
+ACCESS_TOKEN = "token_generated_by_facebook"
+
+VERIFY_TOKEN = "hand_made_token"

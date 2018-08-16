@@ -1,0 +1,14 @@
+*.swp
+*.swo
+__pycache__
+*.pyc
+.python-version
+test
+corpus/*
+model/*
+model_RL/*
+sentiment_analysis/corpus/*
+*.log
+sentiment_analysis/saved_model/*
+test.py
+fb_setting.py

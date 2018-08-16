@@ -8,6 +8,8 @@ import sys
 import tensorflow as tf
 from tensorflow.python.platform import gfile
 
+WORD_DIM = 6258 
+WORD_DIM = 8081 
 WORD_SPLIT = re.compile(b"([.,!?\"':;)(])")
 DIGIT_RE = re.compile(br"\d")
 DU_RE = re.compile(b"\!")
@@ -133,20 +135,27 @@ def read_data(source_path, target_path, bucket):
       
       source, target = source_file.readline(), target_file.readline()
       counter = 0     
- 
       while source and target:
         counter += 1
         if counter % 100000 == 0:
           print("  reading data line %d" % counter)
+          #print('source: ',source, 'target: ',target)
+          #print('bucket: ',bucket)
+ 
           sys.stdout.flush()
         source_ids = [int(x) for x in source.split()]
         target_ids = [int(x) for x in target.split()]
         target_ids.append(EOS_ID)
 
         for bucket_id, (source_size, target_size) in enumerate(bucket):
+          #if counter % 100000 == 0:
+          #    print('bucket_id, (source_size, target_size): ',bucket_id, (source_size, target_size))
+          #    print('len(source_ids): ',len(source_ids),
+          #          ' len(target_ids): ',len(target_ids))
           if len(source_ids) < source_size and len(target_ids) < target_size:
             data_set[bucket_id].append((source_ids, target_ids))
             break
+          #if bucket_id == 3: print('too long=======>',counter)
 
         source, target = source_file.readline(), target_file.readline()
 
@@ -176,7 +185,7 @@ def read_token_data(file_path):
     raise ValueError("Can not find token file %s" % token_path)
 
 if __name__ == "__main__":
-  prepare_whole_data('corpus/source', 'corpus/target', 60000)
+  prepare_whole_data('corpus/source', 'corpus/target', WORD_DIM)
   #data_set_1 = read_token_data('corpus/valid.source')
   #data_set_2 = read_token_data('corpus/valid.target')
 
