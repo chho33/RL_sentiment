@@ -34,10 +34,10 @@ tf.app.flags.DEFINE_boolean('beam_search', False, 'beam search')
 tf.app.flags.DEFINE_integer('beam_size', 10 , 'beam size')
 tf.app.flags.DEFINE_boolean('debug', True, 'debug')
 # schedule sampling
-tf.app.flags.DEFINE_string('schedule_sampling', 'inverse_sigmoid', 'schedule sampling type[linear|exp|inverse_sigmoid|False]')
+tf.app.flags.DEFINE_string('schedule_sampling', 'linear', 'schedule sampling type[linear|exp|inverse_sigmoid|False]')
 tf.app.flags.DEFINE_float('sampling_decay_rate', 0.99 , 'schedule sampling decay rate')
-tf.app.flags.DEFINE_integer('sampling_global_step', 10000, 'sampling_global_step')
-tf.app.flags.DEFINE_integer('sampling_decay_steps', 5000, 'sampling_decay_steps')
+tf.app.flags.DEFINE_integer('sampling_global_step', 150000, 'sampling_global_step')
+tf.app.flags.DEFINE_integer('sampling_decay_steps', 500, 'sampling_decay_steps')
 
 
 FLAGS = tf.app.flags.FLAGS
