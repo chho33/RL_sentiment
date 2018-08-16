@@ -6,7 +6,6 @@ hidden_size = 512
 num_layers = 4 
 batch_size = 32
 model_dir = 'model/xhj_ptt_%s_%s_%s/'%(hidden_size,num_layers,batch_size) 
-model_dir = 'model/tmp/'
 model_RL_dir = 'model_RL/xhj_ptt_%s_%s_%s/'%(hidden_size,num_layers,batch_size)
 if not os.path.exists(model_dir):
     print('create model dir: ',model_dir)
@@ -20,9 +19,6 @@ tf.app.flags.DEFINE_integer('hidden_size', hidden_size, 'number of units of hidd
 tf.app.flags.DEFINE_integer('num_layers', num_layers, 'number of layers')
 tf.app.flags.DEFINE_integer('batch_size', batch_size, 'batch size')
 tf.app.flags.DEFINE_string('mode', 'MLE', 'mode of the seq2seq model')
-#tf.app.flags.DEFINE_string('source_data_dir', 'corpus/xhj/source', 'directory of source')
-#tf.app.flags.DEFINE_string('target_data_dir', 'corpus/xhj/target', 'directory of target')
-#tf.app.flags.DEFINE_string('model_dir', 'model/x_5_32/', 'directory of model')
 tf.app.flags.DEFINE_string('source_data_dir', 'corpus/source', 'directory of source')
 tf.app.flags.DEFINE_string('target_data_dir', 'corpus/target', 'directory of target')
 tf.app.flags.DEFINE_string('model_dir', model_dir, 'directory of model')
