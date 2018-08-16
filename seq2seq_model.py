@@ -30,9 +30,9 @@ class Seq2seq():
                state_keep_prob,
                beam_search,
                beam_size,
-               schedule_sampling='exp', 
+               schedule_sampling='linear', 
                sampling_decay_rate=0.99,
-               sampling_global_step=100000,
+               sampling_global_step=150000,
                sampling_decay_steps=500
                ):
     

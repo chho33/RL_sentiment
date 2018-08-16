@@ -32,7 +32,7 @@ def reply(user_id, msg):
         "recipient": {"id": user_id},
         "message": {"text": msg}
     }
-    # Post request using the Facebook Graph API v2.6
+    # Post request using the Facebook Graph API v3.1
     resp = requests.post("https://graph.facebook.com/v3.1/me/messages?access_token=" + ACCESS_TOKEN, json=data)
     print(resp.content)
 
